@@ -65,8 +65,8 @@ struct PowerTab: View {
                     hint: "this instant, unsmoothed")
             }
             if let gauge = snap.isPluggedIn ? snap.minutesToFull : snap.minutesToEmpty {
-                Row("Gauge says", Format.duration(gauge),
-                    hint: "battery's own estimate")
+                Row(snap.isPluggedIn ? "Gauge, to 100%" : "Gauge says", Format.duration(gauge),
+                    hint: snap.isPluggedIn ? "battery's own estimate, always to 100%" : "battery's own estimate")
             }
         }
 
