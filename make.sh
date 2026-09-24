@@ -57,10 +57,11 @@ plugin_flags() {
 # A short hash of every source file the root helper (`--ctl`) is built from.
 # It's stamped into the binary, so the in-app updater can tell whether an
 # update changes the helper at all. Most don't, and those install without
-# a password.
+# a password. Battery/ is left out: the helper only uses it for diagnostic
+# output, and power-reading fixes shouldn't cost a password.
 helper_fingerprint() {
     find "${SOURCE_DIR}/CLI" "${SOURCE_DIR}/Control" "${SOURCE_DIR}/Fans" \
-         "${SOURCE_DIR}/SMC" "${SOURCE_DIR}/Battery" "${SOURCE_DIR}/Support" \
+         "${SOURCE_DIR}/SMC" "${SOURCE_DIR}/Support" \
          "${SOURCE_DIR}/BatteryScopeMain.swift" -name '*.swift' -type f \
         | LC_ALL=C sort | xargs cat | shasum -a 256 | cut -c1-16
 }
