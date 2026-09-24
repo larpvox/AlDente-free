@@ -37,7 +37,7 @@ struct HealthTab: View {
         Card("Health") {
             if let reported = snap.trueHealthPercent ?? snap.macOSHealthPercent {
                 Row("Capacity ratio", Format.percent(reported), emphasis: true,
-                    hint: "full charge vs. design")
+                    hint: "raw battery-reported health")
             } else {
                 Row("Capacity ratio", "\u{2014}", emphasis: true)
             }
