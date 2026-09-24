@@ -70,7 +70,8 @@ struct Header: View {
         let snap = monitor.snapshot
         var parts = [snap.stateLabel]
         if snap.isCharging, let m = monitor.estimatedMinutesToFull {
-            parts.append("\(Format.duration(m)) to full")
+            let target = monitor.chargeTarget
+            parts.append("\(Format.duration(m)) to " + (target >= 100 ? "full" : String(format: "%.0f%%", target)))
         } else if !snap.isPluggedIn, let m = monitor.estimatedMinutesLeft {
             parts.append("\(Format.duration(m)) left")
         }

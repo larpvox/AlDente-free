@@ -48,7 +48,7 @@ struct PowerTab: View {
 
         Card("Runtime") {
             if snap.isPluggedIn {
-                Row("To full", monitor.estimatedMinutesToFull.map(Format.duration) ?? "\u{2014}",
+                Row(monitor.chargeTarget >= 100 ? "To full" : String(format: "To %.0f%%", monitor.chargeTarget), monitor.estimatedMinutesToFull.map(Format.duration) ?? "\u{2014}",
                     emphasis: true,
                     hint: monitor.estimateIsOurs ? "from the current charge rate, lightly smoothed" : "from the battery's own gauge")
             } else {

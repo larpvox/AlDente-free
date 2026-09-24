@@ -11,16 +11,7 @@ import SwiftUI
 struct ControlTab: View {
     @EnvironmentObject var monitor: Monitor
 
-    private var systemLimitText: String {
-        if let p = monitor.snapshot.systemChargeLimitPercent {
-            return String(format: "System Settings is holding this Mac at %.0f%%.", p)
-        }
-        return "System Settings is holding this Mac below a full charge."
-    }
-
-    private var ceiling: Double {
-        monitor.chargeLimitEnabled ? monitor.chargeLimit : 100
-    }
+    private var ceiling: Double { monitor.effectiveCeiling }
 
     private var sailingFloor: Double {
         max(20, ceiling - monitor.sailingRange)
@@ -62,16 +53,7 @@ struct ControlTab: View {
     }
 
     var body: some View {
-        if monitor.snapshot.systemChargeLimitActive {
-            Card("macOS is limiting the charge") {
-                Text(systemLimitText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Text("Apple's charge limit is on, so BatteryScope's is paused. Turn Apple's off in System Settings › Battery to use these controls.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } else if !monitor.helperInstalled {
+        if !monitor.helperInstalled {
             Card("Charge control not installed") {
                 Text("Needs the helper: run ./make.sh install.")
                     .font(.callout)
@@ -102,6 +84,12 @@ struct ControlTab: View {
 
             Divider()
 
+            if let mac = monitor.macOSLimit {
+                Text(String(format: "macOS Charge Limit is %.0f%%. BatteryScope can stop lower; to go higher, change it in System Settings › Battery.", mac))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Toggle("Limit charging below full", isOn: $monitor.chargeLimitEnabled)
                 .disabled(!monitor.chargeControlAvailable)
             HStack {
@@ -112,7 +100,8 @@ struct ControlTab: View {
             }
             .disabled(!monitor.chargeLimitEnabled || !monitor.chargeControlAvailable)
 
-            Button(monitor.topUpArmed ? "Topping up to 100%\u{2026}" : "Top up to 100% once") {
+            Button(String(format: monitor.topUpArmed ? "Topping up to %.0f%%\u{2026}" : "Top up to %.0f%% once",
+                          monitor.macOSLimit ?? 100)) {
                 monitor.topUpArmed.toggle()
             }
             .disabled(!monitor.chargeControlAvailable)
@@ -213,8 +202,13 @@ struct ControlTab: View {
                 Text(lastCalibrationText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if monitor.macOSLimit != nil {
+                    Text("Turn off Charge Limit in System Settings › Battery first, or calibration can't reach 100%.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 Button("Start calibration") { monitor.startCalibration() }
-                    .disabled(!monitor.chargeControlAvailable)
+                    .disabled(!monitor.chargeControlAvailable || monitor.macOSLimit != nil)
             }
         }
     }

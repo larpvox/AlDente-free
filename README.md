@@ -182,7 +182,8 @@ shutting down at 40–50% or sitting at 100% for hours; four or five full cycles
 fixes it, and one full cycle a fortnight avoids it. And macOS Tahoe 26.4 added a
 native 80–100% charge limit in System Settings — if an 80% ceiling is all you
 want, use Apple's, because it runs in firmware and survives sleep and logout.
-The reason to run this app is the instrumentation.
+BatteryScope works alongside it: it reads Apple's limit, can stop charging lower,
+and runs Sailing Mode below whichever limit is lower.
 
 ---
 

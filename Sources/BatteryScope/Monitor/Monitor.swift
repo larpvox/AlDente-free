@@ -23,6 +23,7 @@ final class Monitor: ObservableObject {
 
     @Published private(set) var snapshot = BatterySnapshot()
     private var macOSChargeLimit: Double?
+    private var macOSLimitUnknownStreak = 0
     @Published private(set) var processes: [ProcessEnergy] = []
     @Published private(set) var breakdown = EnergyBreakdown()
 
@@ -226,10 +227,23 @@ final class Monitor: ObservableObject {
 
     var helperInstalled: Bool { ChargeControlClient.isInstalled }
 
-    /// Charge control is usable only when the helper is present and macOS
-    /// isn't already limiting the charge itself.
-    var chargeControlAvailable: Bool {
-        helperInstalled && !snapshot.systemChargeLimitActive
+    /// Charge control works alongside the macOS limit: macOS stops at its
+    /// limit, BatteryScope can stop lower and sail below it.
+    var chargeControlAvailable: Bool { helperInstalled }
+
+    /// The limit macOS itself is enforcing, if any.
+    var macOSLimit: Double? {
+        snapshot.systemChargeLimitActive ? (snapshot.systemChargeLimitPercent ?? 80) : nil
+    }
+
+    /// Where charging stops: the lower of BatteryScope's limit and macOS's.
+    var effectiveCeiling: Double {
+        min(chargeLimitEnabled ? chargeLimit : 100, macOSLimit ?? 100)
+    }
+
+    /// What the battery is charging towards right now.
+    var chargeTarget: Double {
+        topUpArmed ? (macOSLimit ?? 100) : effectiveCeiling
     }
 
     init() {
@@ -371,7 +385,21 @@ final class Monitor: ObservableObject {
         snapshot = snap
 
         // macOS 26.4's Charge Limit slider doesn't show up in the IORegistry.
-        if slowDue { macOSChargeLimit = SystemChargeLimit.read() }
+        // A read that can't tell keeps the last answer, so the Control tab
+        // doesn't flicker; five in a row and it's treated as off.
+        if slowDue {
+            switch SystemChargeLimit.read() {
+            case .on(let limit):
+                macOSChargeLimit = limit
+                macOSLimitUnknownStreak = 0
+            case .off:
+                macOSChargeLimit = nil
+                macOSLimitUnknownStreak = 0
+            case .unknown:
+                macOSLimitUnknownStreak += 1
+                if macOSLimitUnknownStreak >= 5 { macOSChargeLimit = nil }
+            }
+        }
         if let limit = macOSChargeLimit {
             snapshot.systemChargeLimitActive = true
             snapshot.systemChargeLimitPercent = limit
@@ -509,13 +537,13 @@ final class Monitor: ObservableObject {
         return nil
     }
 
-    private func headroomEnergy(_ snap: BatterySnapshot, volts: Double) -> Double? {
+    private func headroomEnergy(_ snap: BatterySnapshot, volts: Double, to target: Double) -> Double? {
         guard let full = snap.rawMaxCapacity ?? snap.designCapacity, full > 0 else { return nil }
-        if let now = snap.rawCurrentCapacity, now > 0 {
-            return max(0, full - now) * volts / 1000
+        guard let percent = effectivePercent else {
+            guard let now = snap.rawCurrentCapacity, now > 0 else { return nil }
+            return max(0, full * target / 100 - now) * volts / 1000
         }
-        guard let percent = effectivePercent else { return nil }
-        return full * max(0, 100 - percent) / 100 * volts / 1000
+        return full * max(0, target - percent) / 100 * volts / 1000
     }
 
     /// Smoothed battery power for the runtime estimate, and when it was last
@@ -573,18 +601,24 @@ final class Monitor: ObservableObject {
         }
 
         if mode == 2 {
-            if let typical, typical > 0.1, let headroom = headroomEnergy(snap, volts: volts) {
+            // Charging towards the limit, not to 100%, when one is set. A
+            // trickle that would take more than a day isn't a real estimate.
+            let target = chargeTarget
+            let percent = effectivePercent ?? 0
+            guard !sailingHolding, percent < target - 0.5 else { return }
+            if let typical, typical > 0.1, let headroom = headroomEnergy(snap, volts: volts, to: target) {
                 // Above roughly 80% the charger tapers and the rate keeps
                 // falling, so a flat extrapolation from the current rate runs
                 // short. Below that the current rate is the honest answer.
-                let percent = effectivePercent ?? 0
-                let taper = percent > 80 ? 1.3 : 1.0
-                estimatedMinutesToFull = Int((headroom / typical) * 60 * taper)
+                let taper = target > 90 && percent > 80 ? 1.3 : 1.0
+                let minutes = Int((headroom / typical) * 60 * taper)
+                guard minutes <= 24 * 60 else { return }
+                estimatedMinutesToFull = minutes
                 estimateWatts = typical
                 estimateIsOurs = true
                 return
             }
-            estimatedMinutesToFull = snap.minutesToFull
+            if target >= 100 { estimatedMinutesToFull = snap.minutesToFull }
         }
     }
 
@@ -593,19 +627,9 @@ final class Monitor: ObservableObject {
     /// Decide what the charger should be doing and tell the helper, with a little
     /// hysteresis so we're not flapping the SMC every five seconds.
     private func enforce() {
-        // Apple's limiter runs in firmware and survives sleep and logout.
-        // Fighting it would just produce two systems toggling the same keys.
-        if snapshot.systemChargeLimitActive {
-            let limit = snapshot.systemChargeLimitPercent.map { String(format: "%.0f%%", $0) } ?? "on"
-            let note = "macOS charge limit (\(limit)) is in charge"
-            if helperInstalled {
-                apply(inhibit: false, discharge: false, note: note)
-            } else {
-                lastHelperMessage = note
-            }
-            return
-        }
-
+        // macOS's own limit, when set, stops charging by itself. BatteryScope
+        // works underneath it: it can stop lower, and sail below whichever
+        // limit is lower. It never needs to lift macOS's.
         guard helperInstalled else { return }
         guard let percent = effectivePercent else { return }
 
@@ -616,10 +640,11 @@ final class Monitor: ObservableObject {
         }
 
         if topUpArmed {
-            if percent >= 99.5 {
+            if percent >= min(99.5, (macOSLimit ?? 100) - 0.5) {
                 topUpArmed = false
             } else {
-                apply(inhibit: false, discharge: false, note: "Topping up to 100%")
+                apply(inhibit: false, discharge: false,
+                      note: String(format: "Topping up to %.0f%%", macOSLimit ?? 100))
                 return
             }
         }
@@ -630,17 +655,24 @@ final class Monitor: ObservableObject {
             return
         }
 
-        // The ceiling is the charge limit when one is set, and a full charge
-        // otherwise. Sailing Mode works against either.
-        let ceiling = chargeLimitEnabled ? chargeLimit : 100
+        // The ceiling is the lower of our limit and macOS's, or a full charge.
+        // Sailing Mode works against any of them.
+        let ceiling = effectiveCeiling
+        let appLimited = chargeLimitEnabled && chargeLimit < (macOSLimit ?? 100)
+        // macOS stops a point or so short of its limit and then reports
+        // not charging, which counts as having got there.
+        let atCeiling = percent >= ceiling
+            || (!appLimited && macOSLimit != nil && snapshot.isPluggedIn
+                && !snapshot.isCharging && percent >= ceiling - 2)
 
         guard sailingEnabled else {
-            guard chargeLimitEnabled else {
-                sailingHolding = false
+            sailingHolding = false
+            // With only macOS limiting, there is nothing for us to do.
+            guard appLimited else {
                 apply(inhibit: false, discharge: false)
                 return
             }
-            if percent >= ceiling {
+            if atCeiling {
                 apply(inhibit: true, discharge: autoDischargeEnabled && percent > ceiling + 1)
             } else if percent <= ceiling - 3 {
                 apply(inhibit: false, discharge: false)
@@ -659,11 +691,11 @@ final class Monitor: ObservableObject {
                 apply(inhibit: false, discharge: false,
                       note: String(format: "Sailing: charging back to %.0f%%", ceiling))
             } else {
-                let wantsDischarge = autoDischargeEnabled && chargeLimitEnabled && percent > ceiling + 1
+                let wantsDischarge = autoDischargeEnabled && appLimited && percent > ceiling + 1
                 apply(inhibit: true, discharge: wantsDischarge,
                       note: String(format: "Sailing between %.0f and %.0f%%", floorLevel, ceiling))
             }
-        } else if percent >= ceiling {
+        } else if atCeiling {
             sailingHolding = true
             apply(inhibit: true, discharge: false,
                   note: String(format: "Sailing: holding, will drift to %.0f%%", floorLevel))
@@ -679,7 +711,8 @@ final class Monitor: ObservableObject {
     /// leave the fuel gauge guessing; one clean sweep end to end gives it two
     /// real reference points again.
     func startCalibration() {
-        guard helperInstalled else { return }
+        // macOS's limit would stop the charge half short of 100%.
+        guard helperInstalled, macOSLimit == nil else { return }
         setPhase(.discharging)
         calibrationMessage = "Starting"
         setKeepAwake(true, force: true)
