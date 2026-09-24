@@ -247,22 +247,22 @@ final class Monitor: ObservableObject {
     }
 
     init() {
-        chargeLimitEnabled = defaults.bool(forKey: "chargeLimitEnabled")
+        chargeLimitEnabled = defaults.object(forKey: "chargeLimitEnabled") as? Bool ?? true
         let storedLimit = defaults.double(forKey: "chargeLimit")
         chargeLimit = storedLimit == 0 ? 80 : storedLimit
         useHardwarePercent = defaults.object(forKey: "useHardwarePercent") as? Bool ?? false
-        heatProtectionEnabled = defaults.bool(forKey: "heatProtectionEnabled")
+        heatProtectionEnabled = defaults.object(forKey: "heatProtectionEnabled") as? Bool ?? true
         let storedHeat = defaults.double(forKey: "heatProtectionCelsius")
-        heatProtectionCelsius = storedHeat == 0 ? 35 : storedHeat
+        heatProtectionCelsius = storedHeat == 0 ? 40 : storedHeat
         autoDischargeEnabled = defaults.bool(forKey: "autoDischargeEnabled")
         if let saved = defaults.array(forKey: "menuBarFields") as? [String] {
             menuBarFields = Set(saved.compactMap(MenuBarField.init(rawValue:)))
         } else {
             // macOS already shows the percentage, so start with what it doesn't.
-            menuBarFields = [.systemWatts, .temperature]
+            menuBarFields = [.chargerWatts, .systemWatts, .timeRemaining]
         }
         let savedRefresh = defaults.double(forKey: "refreshSeconds")
-        refreshSeconds = savedRefresh == 0 ? 5 : savedRefresh
+        refreshSeconds = savedRefresh == 0 ? 2 : savedRefresh
         let savedSlow = defaults.double(forKey: "slowSeconds")
         slowSeconds = savedSlow == 0 ? 60 : savedSlow
         idleSlowdown = defaults.object(forKey: "idleSlowdown") as? Bool ?? true
