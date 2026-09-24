@@ -1,0 +1,48 @@
+# Keeps BatteryScope.zip — the download linked from the README — in step with
+# the source. Any push to the default branch (whatever it's called) that
+# touches what goes into the zip rebuilds it with `./make.sh zip` and commits
+# the result if it changed.
+
+name: Update download zip
+
+on:
+  push:
+    paths:
+      - "Sources/**"
+      - "docs/**"
+      - "make.sh"
+      - "VERSION"
+      - "Package.swift"
+      - "README.md"
+      - ".gitignore"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-zip
+  cancel-in-progress: false
+
+jobs:
+  zip:
+    # Only the default branch feeds the download link in the README.
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build BatteryScope.zip
+        run: ./make.sh zip
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- BatteryScope.zip; then
+            echo "BatteryScope.zip already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BatteryScope.zip
+          git commit -m "Update BatteryScope.zip"
+          git push
