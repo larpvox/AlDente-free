@@ -249,7 +249,7 @@ final class Monitor: ObservableObject {
     init() {
         chargeLimitEnabled = defaults.object(forKey: "chargeLimitEnabled") as? Bool ?? true
         let storedLimit = defaults.double(forKey: "chargeLimit")
-        chargeLimit = storedLimit == 0 ? 80 : storedLimit
+        chargeLimit = storedLimit == 0 ? 85 : storedLimit
         useHardwarePercent = defaults.object(forKey: "useHardwarePercent") as? Bool ?? false
         heatProtectionEnabled = defaults.object(forKey: "heatProtectionEnabled") as? Bool ?? true
         let storedHeat = defaults.double(forKey: "heatProtectionCelsius")
