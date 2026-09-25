@@ -401,18 +401,20 @@ public enum BatteryReader {
             return
         }
 
-        // Plugged in. The battery rail only measures power drawn out of the
-        // battery, so it reads near zero while charging. Charging power is
-        // what the adapter delivers beyond the system load, both live SMC
-        // figures; the gauge's V×I is the fallback. Discharging (an adapter
-        // that can't keep up) is what the rail does measure.
-        let charging = (gauge ?? 0) > 0.05 || snap.isCharging
-        if charging {
-            if let a = smcAdapter, let sys = smcSystem, a - sys > 0.5 {
-                snap.batteryWatts = a - sys
+        // Plugged in. When both SMC rails are live, the conservation law
+        // settles it outright, charging or discharging: this is also exactly
+        // what "System draw" and "Charger delivering" show, so the figure
+        // shown as flowing into or out of the cell can never contradict them.
+        // Only when one of those rails is missing do we fall back to the
+        // slower gauge or battery-rail readings, guided by whichever
+        // direction they, or the IsCharging flag, suggest.
+        if let a = smcAdapter, let sys = smcSystem {
+            snap.batteryWatts = a - sys
+        } else {
+            let charging = (gauge ?? 0) > 0.05 || snap.isCharging
+            if !charging, let rail, let g = gauge, g < -0.05 {
+                snap.batteryWatts = -rail
             }
-        } else if let rail, let g = gauge, g < -0.05 {
-            snap.batteryWatts = -rail
         }
         let battery = snap.batteryWatts
 
