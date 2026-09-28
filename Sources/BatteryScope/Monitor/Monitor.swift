@@ -222,8 +222,10 @@ final class Monitor: ObservableObject {
     private var lastFanSample = Date.distantPast
     private var lastFloorUpdate = Date.distantPast
     private var profilerHealth: Double?
-    /// Keep roughly ten minutes of history whatever the refresh rate.
-    private var historyLimit: Int { max(60, Int(600 / max(1, refreshSeconds))) }
+    /// Ten minutes of history, by age rather than by count: sleep and the
+    /// slower ticks with the panel shut would otherwise stretch a fixed
+    /// number of points across hours.
+    static let historyWindow: TimeInterval = 600
 
     var helperInstalled: Bool { ChargeControlClient.isInstalled }
 
@@ -439,7 +441,10 @@ final class Monitor: ObservableObject {
             adapterWatts: snap.adapterWatts ?? 0,
             batteryWatts: snap.batteryWatts ?? 0
         ))
-        if history.count > historyLimit { history.removeFirst(history.count - historyLimit) }
+        let cutoff = snap.timestamp.addingTimeInterval(-Self.historyWindow)
+        if let keep = history.firstIndex(where: { $0.time >= cutoff }), keep > 0 {
+            history.removeFirst(keep)
+        }
 
         recomputeRuntime(snap)
 

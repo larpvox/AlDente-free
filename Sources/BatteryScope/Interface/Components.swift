@@ -117,13 +117,22 @@ struct Sparkline: View {
                         }
 
                         Path { path in
-                            let values = points.map(\.systemWatts)
-                            guard values.count > 1 else { return }
-                            for (i, v) in values.enumerated() {
-                                let x = geo.size.width * CGFloat(i) / CGFloat(values.count - 1)
-                                let y = geo.size.height * (1 - CGFloat(v / maxValue))
-                                if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                                else { path.addLine(to: CGPoint(x: x, y: y)) }
+                            guard let start = points.first?.time, let end = points.last?.time,
+                                  points.count > 1 else { return }
+                            let span = max(end.timeIntervalSince(start), 1)
+                            // Nothing was measured across a sleep, so don't draw through it.
+                            let gaps = zip(points, points.dropFirst())
+                                .map { $1.time.timeIntervalSince($0.time) }.sorted()
+                            let breakGap = max(90, gaps[gaps.count / 2] * 3)
+                            for (i, p) in points.enumerated() {
+                                let x = geo.size.width * CGFloat(p.time.timeIntervalSince(start) / span)
+                                let y = geo.size.height * (1 - CGFloat(p.systemWatts / maxValue))
+                                let point = CGPoint(x: x, y: y)
+                                if i == 0 || p.time.timeIntervalSince(points[i - 1].time) > breakGap {
+                                    path.move(to: point)
+                                } else {
+                                    path.addLine(to: point)
+                                }
                             }
                         }
                         .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
