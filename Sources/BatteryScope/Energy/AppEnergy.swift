@@ -5,6 +5,7 @@
 //  Per-process energy: top(1) parser, system_profiler and powermetrics bridges.
 //
 
+import Darwin
 import Foundation
 
 public struct ProcessEnergy: Identifiable, Equatable {
@@ -68,7 +69,6 @@ public enum AppEnergySampler {
         // `top` is only running because we asked it to. Its cost is the price
         // of the measurement, not a fact about the machine.
         rows.removeAll { $0.name == "top" || $0.name.hasSuffix("/top") }
-        result.sampledProcessCount = rows.count
 
         let total = totalWatts ?? 0
         result.totalWatts = total
@@ -102,6 +102,9 @@ public enum AppEnergySampler {
             }
         }
 
+        rows = groupByApp(rows)
+        result.sampledProcessCount = rows.count
+
         rows.sort { ($0.estimatedWatts ?? 0, $0.energyImpact) > ($1.estimatedWatts ?? 0, $1.energyImpact) }
         var selected = Array(rows.prefix(limit))
 
@@ -116,6 +119,47 @@ public enum AppEnergySampler {
         result.otherProcessesWatts = max(0, budget - shown)
         result.processes = selected
         return result
+    }
+
+    /// Chrome, Safari and every Electron app run as a crowd of helper
+    /// processes, each of which on its own looks cheap. Activity Monitor adds
+    /// them up under the app that owns them, and so does this.
+    static func groupByApp(_ rows: [ProcessEnergy]) -> [ProcessEnergy] {
+        var groups: [String: ProcessEnergy] = [:]
+        var order: [String] = []
+        for row in rows {
+            let app = appBundle(pid: row.pid)
+            let key = app?.path ?? "pid:\(row.pid)"
+            if let g = groups[key] {
+                groups[key] = ProcessEnergy(
+                    pid: g.pid,
+                    name: g.name,
+                    energyImpact: g.energyImpact + row.energyImpact,
+                    cpuPercent: g.cpuPercent + row.cpuPercent,
+                    estimatedWatts: g.estimatedWatts.map { $0 + (row.estimatedWatts ?? 0) } ?? row.estimatedWatts
+                )
+            } else {
+                var first = row
+                if let app { first = ProcessEnergy(pid: row.pid, name: app.name, energyImpact: row.energyImpact,
+                                                   cpuPercent: row.cpuPercent, estimatedWatts: row.estimatedWatts) }
+                groups[key] = first
+                order.append(key)
+            }
+        }
+        return order.compactMap { groups[$0] }
+    }
+
+    /// The outermost .app a process runs from. Helpers live inside their
+    /// app's own bundle, so the first ".app/" in the path is the app itself.
+    private static func appBundle(pid: Int32) -> (path: String, name: String)? {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        let path = String(cString: buffer)
+        guard let range = path.range(of: ".app/") else { return nil }
+        let bundle = String(path[..<range.lowerBound])
+        let name = (bundle as NSString).lastPathComponent
+        guard !name.isEmpty else { return nil }
+        return (bundle + ".app", name)
     }
 
     private static func runTop() -> String? {

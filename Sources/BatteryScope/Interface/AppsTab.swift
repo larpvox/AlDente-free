@@ -42,7 +42,7 @@ struct AppsTab: View {
 
         Card("Adding up") {
             Row("These \(monitor.processes.count)", Format.watts(shownWatts))
-            Row("Other \(max(0, breakdown.sampledProcessCount - monitor.processes.count)) processes",
+            Row("Other \(max(0, breakdown.sampledProcessCount - monitor.processes.count)) apps and processes",
                 Format.watts(breakdown.otherProcessesWatts))
             Row("Display, radios, idle", Format.watts(breakdown.baselineWatts),
                 hint: "drawn by the machine, not by any process")
