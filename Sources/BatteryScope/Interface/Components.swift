@@ -78,7 +78,7 @@ struct Sparkline: View {
         }
         let seconds = Int(last.time.timeIntervalSince(first.time))
         if seconds < 90 { return "LAST \(seconds)s" }
-        return "LAST \(seconds / 60) MIN"
+        return "LAST \(Int((Double(seconds) / 60).rounded())) MIN"
     }
 
     private func label(_ watts: Double) -> String {
