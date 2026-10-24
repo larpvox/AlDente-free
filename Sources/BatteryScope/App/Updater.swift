@@ -21,7 +21,7 @@ final class Updater {
     static let shared = Updater()
 
     static let owner = "larpvox"
-    static let repo = "batteryscope"
+    static let repo = "AlDente-free"
     static let helperPath = "/usr/local/bin/batteryscope-helper"
 
     /// `HEAD` is whatever the default branch is called.
