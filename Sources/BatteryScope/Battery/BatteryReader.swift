@@ -410,6 +410,10 @@ public enum BatteryReader {
         // direction they, or the IsCharging flag, suggest.
         if let a = smcAdapter, let sys = smcSystem {
             snap.batteryWatts = a - sys
+            // IsCharging is republished with the rest of the registry, up to a
+            // minute late. Watts clearly going into the cell settle it now.
+            // The margin covers charger losses, which also show up as a - sys.
+            if a - sys > 3 { snap.isCharging = true }
         } else {
             let charging = (gauge ?? 0) > 0.05 || snap.isCharging
             if !charging, let rail, let g = gauge, g < -0.05 {
