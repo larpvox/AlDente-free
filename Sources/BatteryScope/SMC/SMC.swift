@@ -352,8 +352,9 @@ public enum SMCKeys {
     // Which rails and sensors exist varies by model, so each of these is a
     // list of candidates tried in order until one returns a sane value.
 
-    /// Total system power draw, watts.
-    public static let systemPowerKeys = ["PSTR", "PSVR", "PDTR"]
+    /// Total system power draw, watts. Never PDTR: that's the charger's
+    /// input, and falling back to it shows the adapter's output as the load.
+    public static let systemPowerKeys = ["PSTR", "PSVR"]
     /// Power delivered by the DC-in / adapter, watts.
     public static let adapterPowerKeys = ["PDTR", "PD0R", "PHPC", "PZ0R"]
     /// Battery rail power, watts.

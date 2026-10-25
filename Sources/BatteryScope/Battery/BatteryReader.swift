@@ -311,11 +311,43 @@ public enum BatteryReader {
     /// five times a second adds up; once we know the answer, read one.
     private static var resolvedKeys: [String: String] = [:]
     private static var deadRails: [String: Date] = [:]
+    private static var lastGood: [String: (value: Double, at: Date)] = [:]
+    private static var settledAt: [String: Date] = [:]
 
-    private static func firstSMC(_ rail: String, _ keys: [String], _ plausible: ClosedRange<Double>) -> Double? {
+    /// How long a resolved key may misread before it's given up on.
+    static let holdSeconds: TimeInterval = 10
+
+    /// `plausible` picks which candidate key is live. `knownRange` is what's
+    /// accepted from a key once picked, where that differs: a charger that
+    /// stops delivering reads 0 W, which is a reading, not a missing rail.
+    private static func firstSMC(_ rail: String, _ keys: [String], _ plausible: ClosedRange<Double>,
+                                 knownRange: ClosedRange<Double>? = nil) -> Double? {
         if let known = resolvedKeys[rail] {
-            if let v = SMC.shared.readDouble(known), plausible.contains(v) { return v }
-            resolvedKeys[rail] = nil   // it stopped answering; probe again
+            // Settling for a fallback key, say because the charger read 0 W
+            // while it negotiated, shouldn't be permanent. Look up the list
+            // again now and then.
+            if let i = keys.firstIndex(of: known), i > 0,
+               Date().timeIntervalSince(settledAt[rail] ?? .distantPast) > 30 {
+                settledAt[rail] = Date()
+                for key in keys[..<i] {
+                    if let v = SMC.shared.readDouble(key), plausible.contains(v) {
+                        resolvedKeys[rail] = key
+                        lastGood[rail] = (v, Date())
+                        return v
+                    }
+                }
+            }
+            if let v = SMC.shared.readDouble(known), (knownRange ?? plausible).contains(v) {
+                lastGood[rail] = (v, Date())
+                return v
+            }
+            // One bad read isn't a different rail. Hopping straight to the next
+            // candidate key is how the charger's input got shown as system draw.
+            if let last = lastGood[rail], Date().timeIntervalSince(last.at) < holdSeconds {
+                return last.value
+            }
+            resolvedKeys[rail] = nil
+            lastGood[rail] = nil
         }
 
         // A rail this Mac simply doesn't have shouldn't be re-probed forever.
@@ -327,6 +359,8 @@ public enum BatteryReader {
             if let v = SMC.shared.readDouble(key), plausible.contains(v) {
                 resolvedKeys[rail] = key
                 deadRails[rail] = nil
+                lastGood[rail] = (v, Date())
+                settledAt[rail] = Date()
                 return v
             }
         }
@@ -338,6 +372,8 @@ public enum BatteryReader {
     public static func forgetResolvedKeys() {
         resolvedKeys.removeAll()
         deadRails.removeAll()
+        lastGood.removeAll()
+        settledAt.removeAll()
     }
 
     private static func applySMC(to snap: inout BatterySnapshot, slow: Bool = true) {
@@ -349,7 +385,7 @@ public enum BatteryReader {
         }
 
         let smcSystem = firstSMC("system", SMCKeys.systemPowerKeys, 0.05...400)
-        let smcAdapter = firstSMC("adapter", SMCKeys.adapterPowerKeys, 0.05...500)
+        let smcAdapter = firstSMC("adapter", SMCKeys.adapterPowerKeys, 0.05...500, knownRange: 0...500)
         snap.smcBatteryWatts = firstSMC("batteryRail", SMCKeys.batteryPowerKeys, -500...500)
 
         resolvePower(&snap, smcSystem: smcSystem, smcAdapter: smcAdapter)
