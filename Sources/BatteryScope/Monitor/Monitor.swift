@@ -120,6 +120,12 @@ final class Monitor: ObservableObject {
     /// True while the battery is being held at the top of the sailing band.
     @Published private(set) var sailingHolding = false
 
+    /// True while charging is paused for heat. It resumes only once the cell
+    /// has cooled `heatResumeMargin` below the limit, not the instant it dips
+    /// a tenth of a degree under it.
+    @Published private(set) var heatPaused = false
+    static let heatResumeMargin: Double = 3
+
     /// Empty on the fanless machines, which is how the Fans tab decides
     /// whether to exist at all.
     @Published private(set) var fans: [FanInfo] = []
@@ -654,9 +660,19 @@ final class Monitor: ObservableObject {
             }
         }
 
-        if heatProtectionEnabled, let t = snapshot.temperatureC, t >= heatProtectionCelsius {
+        if heatProtectionEnabled, let t = snapshot.temperatureC {
+            if t >= heatProtectionCelsius {
+                heatPaused = true
+            } else if t <= heatProtectionCelsius - Self.heatResumeMargin {
+                heatPaused = false
+            }
+        } else {
+            heatPaused = false
+        }
+        if heatPaused, let t = snapshot.temperatureC {
             apply(inhibit: true, discharge: false,
-                  note: String(format: "Charging paused: battery at %.1f\u{00B0}C", t))
+                  note: String(format: "Charging paused: battery at %.1f\u{00B0}C, resumes at %.0f\u{00B0}C",
+                               t, heatProtectionCelsius - Self.heatResumeMargin))
             return
         }
 
