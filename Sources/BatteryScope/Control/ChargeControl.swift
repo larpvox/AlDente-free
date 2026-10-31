@@ -75,21 +75,25 @@ public enum ChargeControl {
 
     // MARK: Reads (no root needed)
 
-    public static var chargingInhibited: Bool {
+    /// Whether a gate key is set, from its raw bytes: any non-zero byte,
+    /// whatever type or byte order the firmware reports it in. The helper
+    /// writes CHTE as 00 00 00 01, which a first-byte read would miss.
+    private static func gateSet(_ key: String) -> Bool? {
+        SMC.shared.read(key).map { $0.bytes.contains { $0 != 0 } }
+    }
+
+    /// nil when the key can't be read, so nothing acts on a guess.
+    public static var chargingInhibited: Bool? {
         switch keySet {
-        case .modern:
-            return (SMC.shared.readDouble("CHTE") ?? 0) != 0
-        case .legacy, .unknown:
-            if let v = SMC.shared.readDouble("CH0B") { return v != 0 }
-            if let v = SMC.shared.readDouble("CH0C") { return v != 0 }
-            return false
+        case .modern: return gateSet("CHTE")
+        case .legacy, .unknown: return gateSet("CH0B") ?? gateSet("CH0C")
         }
     }
 
-    public static var adapterDisabled: Bool {
+    public static var adapterDisabled: Bool? {
         switch keySet {
-        case .modern: return (SMC.shared.readDouble("CHIE") ?? 0) != 0
-        case .legacy, .unknown: return (SMC.shared.readDouble("CH0I") ?? 0) != 0
+        case .modern: return gateSet("CHIE")
+        case .legacy, .unknown: return gateSet("CH0I")
         }
     }
 

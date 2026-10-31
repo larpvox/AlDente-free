@@ -827,22 +827,23 @@ final class Monitor: ObservableObject {
 
     private func apply(inhibit: Bool, discharge: Bool, note: String? = nil) {
         let now = Date()
-        // macOS's own Charge Limit drives the same gate, and sleep can reset
-        // it, so a hold set once doesn't stay set. Check the hardware rather
-        // than trusting what we last wrote. Only ever in the holding
-        // direction: forcing the gate open would fight macOS's limit.
-        let verifiable = ChargeControl.keySet != .unknown
+        // macOS's own Charge Limit drives the same gate, and sleep and
+        // replugging can reset it, so a hold set once doesn't stay set. Check
+        // the hardware rather than trusting what we last wrote. Only ever in
+        // the holding direction: forcing the gate open would fight macOS's
+        // limit. Unplugged the gate does nothing, so it's left until it does.
+        let pluggedIn = snapshot.isPluggedIn
         let inhibitDue = now.timeIntervalSince(inhibitAttemptAt) >= Self.reassertSeconds
-        let inhibitSlipped = inhibit && lastInhibit == true && verifiable && inhibitDue
-            && !ChargeControl.chargingInhibited
+        let inhibitSlipped = inhibit && lastInhibit == true && pluggedIn && inhibitDue
+            && ChargeControl.chargingInhibited == false
         if (lastInhibit != inhibit && (lastInhibit != nil || inhibitDue)) || inhibitSlipped {
             inhibitAttemptAt = now
             lastInhibit = ChargeControlClient.setChargingInhibited(inhibit) ? inhibit : nil
         }
         let cutAdapter = discharge && wantsAdapterCutoff
         let dischargeDue = now.timeIntervalSince(dischargeAttemptAt) >= Self.reassertSeconds
-        let cutSlipped = cutAdapter && lastDischarge == true && verifiable && dischargeDue
-            && !ChargeControl.adapterDisabled
+        let cutSlipped = cutAdapter && lastDischarge == true && pluggedIn && dischargeDue
+            && ChargeControl.adapterDisabled == false
         if (lastDischarge != cutAdapter && (lastDischarge != nil || dischargeDue)) || cutSlipped {
             dischargeAttemptAt = now
             let wasCut = lastDischarge == true

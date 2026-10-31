@@ -401,8 +401,8 @@ public enum BatteryReader {
                 snap.systemChargeLimitPercent = snap.systemChargeLimitPercent ?? 80
             }
         }
-        if let v = SMC.shared.readDouble(SMCKeys.chargeInhibitB) { snap.chargingInhibited = v != 0 }
-        if let v = SMC.shared.readDouble(SMCKeys.adapterDisable) { snap.adapterDisabled = v != 0 }
+        snap.chargingInhibited = ChargeControl.chargingInhibited
+        snap.adapterDisabled = ChargeControl.adapterDisabled
     }
 
     /// Work out the three power figures from whatever the machine actually

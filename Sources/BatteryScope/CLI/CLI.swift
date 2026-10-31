@@ -60,8 +60,8 @@ enum CLI {
     print("charge key set    : \(ChargeControl.keySet.rawValue)")
     print("fans              : \(FanController.count)")
     print("adapter cutoff    : \(ChargeControl.supportsAdapterCutoff ? "supported" : "unavailable")")
-            print("charging inhibited: \(ChargeControl.chargingInhibited)")
-            print("adapter disabled  : \(ChargeControl.adapterDisabled)")
+            print("charging inhibited: \(ChargeControl.chargingInhibited.map(String.init(describing:)) ?? "unreadable")")
+            print("adapter disabled  : \(ChargeControl.adapterDisabled.map(String.init(describing:)) ?? "unreadable")")
             print("firmware 80% cap  : \(ChargeControl.hardware80)")
             if let p = snap.displayedPercent { print(String(format: "displayed charge  : %.0f%%", p)) }
             if let p = snap.hardwarePercent { print(String(format: "hardware charge   : %.1f%%", p)) }
