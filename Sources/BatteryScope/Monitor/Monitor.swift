@@ -819,18 +819,36 @@ final class Monitor: ObservableObject {
 
     private var lastInhibit: Bool?
     private var lastDischarge: Bool?
+    private var inhibitAttemptAt = Date.distantPast
+    private var dischargeAttemptAt = Date.distantPast
+
+    /// How often a failed write, or a hold something else has undone, is retried.
+    static let reassertSeconds: TimeInterval = 10
 
     private func apply(inhibit: Bool, discharge: Bool, note: String? = nil) {
-        if lastInhibit != inhibit {
-            _ = ChargeControlClient.setChargingInhibited(inhibit)
-            lastInhibit = inhibit
+        let now = Date()
+        // macOS's own Charge Limit drives the same gate, and sleep can reset
+        // it, so a hold set once doesn't stay set. Check the hardware rather
+        // than trusting what we last wrote. Only ever in the holding
+        // direction: forcing the gate open would fight macOS's limit.
+        let verifiable = ChargeControl.keySet != .unknown
+        let inhibitDue = now.timeIntervalSince(inhibitAttemptAt) >= Self.reassertSeconds
+        let inhibitSlipped = inhibit && lastInhibit == true && verifiable && inhibitDue
+            && !ChargeControl.chargingInhibited
+        if (lastInhibit != inhibit && (lastInhibit != nil || inhibitDue)) || inhibitSlipped {
+            inhibitAttemptAt = now
+            lastInhibit = ChargeControlClient.setChargingInhibited(inhibit) ? inhibit : nil
         }
         let cutAdapter = discharge && wantsAdapterCutoff
-        if lastDischarge != cutAdapter {
-            _ = ChargeControlClient.setAdapterDisabled(cutAdapter)
-            lastDischarge = cutAdapter
+        let dischargeDue = now.timeIntervalSince(dischargeAttemptAt) >= Self.reassertSeconds
+        let cutSlipped = cutAdapter && lastDischarge == true && verifiable && dischargeDue
+            && !ChargeControl.adapterDisabled
+        if (lastDischarge != cutAdapter && (lastDischarge != nil || dischargeDue)) || cutSlipped {
+            dischargeAttemptAt = now
+            let wasCut = lastDischarge == true
+            lastDischarge = ChargeControlClient.setAdapterDisabled(cutAdapter) ? cutAdapter : nil
             // A calibration run manages this itself; don't undo it here.
-            if calibrationPhase != .discharging, calibrationPhase != .charging {
+            if wasCut != cutAdapter, calibrationPhase != .discharging, calibrationPhase != .charging {
                 setKeepAwake(cutAdapter)
             }
         }
