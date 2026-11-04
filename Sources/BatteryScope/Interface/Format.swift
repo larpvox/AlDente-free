@@ -14,6 +14,10 @@ enum Format {
         guard let v else { return "—" }
         return String(format: "%.2f W", v)
     }
+    /// Per-app figures, which are often well under a watt.
+    static func smallWatts(_ v: Double) -> String {
+        v < 1 ? String(format: "%.0f mW", v * 1000) : String(format: "%.2f W", v)
+    }
     static func signedWatts(_ v: Double?) -> String {
         guard let v else { return "—" }
         return String(format: "%+.2f W", v)

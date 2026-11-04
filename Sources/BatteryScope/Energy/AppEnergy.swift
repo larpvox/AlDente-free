@@ -38,26 +38,10 @@ public struct EnergyBreakdown {
 
 public enum AppEnergySampler {
 
-    /// Attribute power to processes.
-    ///
-    /// The old version divided the machine's entire draw among the twelve
-    /// processes on screen, which meant those twelve absorbed everything
-    /// whether they accounted for it or not, and the numbers were guaranteed
-    /// not to reconcile with anything.
-    ///
-    /// Two things changed. The budget is now the power that processes can
-    /// plausibly be responsible for, rather than the whole machine: CPU and
-    /// GPU package power where the SMC reports it, otherwise system draw minus
-    /// the lowest idle draw actually observed on this Mac. Your display, Wi-Fi
-    /// radio and SSD draw power no process asked for, and handing that to
-    /// Chrome was never defensible. And the shares are computed across every
-    /// process sampled, not just the ones displayed, so what's on screen is a
-    /// real fraction of the total rather than a rescaled one.
-    ///
-    /// Where a compute-power figure exists, CPU time does the splitting, which
-    /// is close to proportional to package power. Without one, Energy Impact
-    /// does it — a weighted composite of CPU, wakeups, GPU and disk that's a
-    /// ranking rather than a measurement.
+    /// Attribute power to processes. The budget is system draw less the
+    /// least this Mac has drawn with nothing running, since the rest is there
+    /// because of what's running. Shares are taken across every process
+    /// sampled, not just the ones shown, so the rows are real fractions.
     public static func sample(limit: Int = 12,
                               totalWatts: Double?,
                               computeWatts: Double?,
@@ -73,34 +57,46 @@ public enum AppEnergySampler {
         let total = totalWatts ?? 0
         result.totalWatts = total
 
-        let budget: Double
-        if let compute = computeWatts, compute > 0 {
-            budget = total > 0 ? min(compute, total) : compute
-            result.usingComputePower = true
-            result.basis = "Measured CPU and GPU package power, split by each process's share of CPU time."
-        } else if let floor = idleFloorWatts, total > 0, floor < total {
+        // Everything above what the machine draws with nothing going on is
+        // down to what's running: the work itself, and the screen, GPU,
+        // radios and storage that work keeps busy. Measured CPU and GPU power
+        // is split by CPU time; the rest by Energy Impact, which weighs GPU,
+        // wakeups and disk as well as CPU.
+        let compute = (computeWatts ?? 0) > 0 ? computeWatts : nil
+        var budget = 0.0
+        var computePart = 0.0
+        if total > 0, let floor = idleFloorWatts, floor < total {
             budget = total - floor
-            result.basis = String(format: "System draw less %.1f W, the lowest idle draw seen on this Mac recently, split by Energy Impact. That floor is your display, radios and storage, which belong to no process.", floor)
+            computePart = min(compute ?? 0, budget)
+            let split = compute != nil
+                ? "measured CPU and GPU power by each app's CPU time, the rest by Energy Impact"
+                : "by Energy Impact"
+            result.basis = String(format: "System draw less %.1f W, the least this Mac has drawn with nothing running. Everything above that is down to what's running, shared out ", floor)
+                + split + "."
+        } else if let compute {
+            budget = total > 0 ? min(compute, total) : compute
+            computePart = budget
+            result.basis = "Still learning this Mac's idle draw, so only measured CPU and GPU power is shared out for now, by CPU time."
         } else if total > 0 {
-            budget = 0
             result.basis = "Still learning this Mac's idle draw. Until there's a floor to subtract, nothing is attributed."
         } else {
-            budget = 0
             result.basis = "No system power reading available on this Mac."
         }
+        result.usingComputePower = computePart > 0
 
         result.attributableWatts = budget
         result.baselineWatts = max(0, total - budget)
 
-        let weights = rows.map { row in
-            result.usingComputePower ? max(0, row.cpuPercent) : max(0, row.energyImpact)
-        }
-        let totalWeight = weights.reduce(0, +)
-        if totalWeight > 0, budget > 0 {
-            for i in rows.indices {
-                rows[i].estimatedWatts = budget * (weights[i] / totalWeight)
+        func share(_ watts: Double, by weight: (ProcessEnergy) -> Double) {
+            let weights = rows.map { max(0, weight($0)) }
+            let sum = weights.reduce(0, +)
+            guard watts > 0, sum > 0 else { return }
+            for i in rows.indices where weights[i] > 0 {
+                rows[i].estimatedWatts = (rows[i].estimatedWatts ?? 0) + watts * weights[i] / sum
             }
         }
+        share(computePart, by: \.cpuPercent)
+        share(budget - computePart, by: \.energyImpact)
 
         rows = groupByApp(rows)
         result.sampledProcessCount = rows.count

@@ -472,7 +472,10 @@ final class Monitor: ObservableObject {
             if idleWindow.count >= 20, now.timeIntervalSince(lastFloorUpdate) >= 60 {
                 lastFloorUpdate = now
                 let sorted = idleWindow.sorted()
-                let floor = sorted[max(0, sorted.count / 20)]
+                // The lowest it has ever settled at, not the quietest stretch
+                // of the last few minutes: in normal use that is barely below
+                // the current draw and left the apps almost nothing.
+                let floor = min(sorted[max(0, sorted.count / 20)], idleFloorWatts ?? .infinity)
                 idleFloorWatts = floor
                 defaults.set(floor, forKey: "idleFloorWatts")
             }

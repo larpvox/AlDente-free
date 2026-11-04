@@ -28,7 +28,7 @@ struct AppsTab: View {
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
                         if let w = proc.estimatedWatts {
-                            Text(String(format: "%.2f W", w))
+                            Text(Format.smallWatts(w))
                                 .font(.callout.monospacedDigit())
                         }
                         Text(String(format: "%.0f", breakdown.usingComputePower ? proc.cpuPercent : proc.energyImpact))
@@ -44,8 +44,8 @@ struct AppsTab: View {
             Row("These \(monitor.processes.count)", Format.watts(shownWatts))
             Row("Other \(max(0, breakdown.sampledProcessCount - monitor.processes.count)) apps and processes",
                 Format.watts(breakdown.otherProcessesWatts))
-            Row("Display, radios, idle", Format.watts(breakdown.baselineWatts),
-                hint: "drawn by the machine, not by any process")
+            Row("Idle floor", Format.watts(breakdown.baselineWatts),
+                hint: "what this Mac draws with nothing running")
             Row("System total", Format.watts(breakdown.totalWatts), emphasis: true)
         }
 
@@ -54,8 +54,8 @@ struct AppsTab: View {
             .foregroundStyle(.secondary)
 
         Text(breakdown.usingComputePower
-             ? "The right-hand column is each process's CPU usage. Because the budget is measured package power and the shares are taken across every process running, these figures reconcile with the system total above."
-             : "The right-hand column is Activity Monitor's Energy Impact score, a weighted composite of CPU time, wakeups, GPU and disk activity rather than a wattage. It ranks well and converts to watts only roughly. Installing charge control lets the app read real CPU and GPU package power through powermetrics, which is considerably better.")
+             ? "The right-hand column is CPU usage, which splits the measured CPU and GPU power. The rest of the draw above the floor (screen, GPU, radios, storage) is split by Energy Impact."
+             : "The right-hand column is Activity Monitor's Energy Impact score, a weighted composite of CPU time, wakeups, GPU and disk activity. It ranks well and converts to watts only roughly. Installing charge control lets the app read real CPU and GPU power through powermetrics, which is better.")
             .font(.caption)
             .foregroundStyle(.secondary)
     }

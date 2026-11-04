@@ -76,8 +76,7 @@ public enum ChargeControl {
     // MARK: Reads (no root needed)
 
     /// Whether a gate key is set, from its raw bytes: any non-zero byte,
-    /// whatever type or byte order the firmware reports it in. The helper
-    /// writes CHTE as 00 00 00 01, which a first-byte read would miss.
+    /// whatever type or byte order the firmware reports it in.
     private static func gateSet(_ key: String) -> Bool? {
         SMC.shared.read(key).map { $0.bytes.contains { $0 != 0 } }
     }
@@ -103,13 +102,17 @@ public enum ChargeControl {
 
     // MARK: Writes (root only)
 
+    /// CHTE is little-endian: the firmware acts on 01 00 00 00 and silently
+    /// ignores 00 00 00 01, which is what this used to write.
+    private static let chteInhibit: [UInt8] = [1, 0, 0, 0]
+
     /// Stop or resume charging while the adapter stays connected. The machine
     /// keeps running on wall power either way; only the cell is gated.
     @discardableResult
     public static func setChargingInhibited(_ inhibit: Bool) -> Bool {
         switch keySet {
         case .modern:
-            return SMC.shared.write("CHTE", bytes: inhibit ? [0, 0, 0, 1] : [0, 0, 0, 0])
+            return SMC.shared.write("CHTE", bytes: inhibit ? chteInhibit : [0, 0, 0, 0])
         case .legacy:
             let value: UInt8 = inhibit ? 0x02 : 0x00
             let b = SMC.shared.write("CH0B", bytes: [value])
@@ -120,7 +123,7 @@ public enum ChargeControl {
             let value: UInt8 = inhibit ? 0x02 : 0x00
             var ok = SMC.shared.write("CH0B", bytes: [value])
             ok = SMC.shared.write("CH0C", bytes: [value]) || ok
-            ok = SMC.shared.write("CHTE", bytes: inhibit ? [0, 0, 0, 1] : [0, 0, 0, 0]) || ok
+            ok = SMC.shared.write("CHTE", bytes: inhibit ? chteInhibit : [0, 0, 0, 0]) || ok
             return ok
         }
     }
@@ -128,15 +131,17 @@ public enum ChargeControl {
     /// Cut the adapter so the machine runs the battery down while plugged in.
     @discardableResult
     public static func setAdapterDisabled(_ disabled: Bool) -> Bool {
-        let byte: UInt8 = disabled ? 0x01 : 0x00
+        // CHIE takes 08 to cut the adapter, not the 01 that CH0I takes.
+        let chie: UInt8 = disabled ? 0x08 : 0x00
+        let ch0i: UInt8 = disabled ? 0x01 : 0x00
         switch keySet {
         case .modern:
-            return SMC.shared.write("CHIE", bytes: [byte])
+            return SMC.shared.write("CHIE", bytes: [chie])
         case .legacy:
-            return SMC.shared.write("CH0I", bytes: [byte])
+            return SMC.shared.write("CH0I", bytes: [ch0i])
         case .unknown:
-            let a = SMC.shared.write("CH0I", bytes: [byte])
-            let b = SMC.shared.write("CHIE", bytes: [byte])
+            let a = SMC.shared.write("CH0I", bytes: [ch0i])
+            let b = SMC.shared.write("CHIE", bytes: [chie])
             return a || b
         }
     }
