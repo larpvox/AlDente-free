@@ -35,6 +35,11 @@ public enum ChargeControl {
     public enum KeySet: String {
         case modern    // CHTE / CHIE
         case legacy    // CH0B + CH0C / CH0I
+        /// macOS 27 firmware: CHTE and friends are still listed but hold no
+        /// data and take no writes, even from root. Only CHIE (cutting the
+        /// adapter) still works; stopping on mains goes through macOS's own
+        /// Charge Limit instead (see SystemChargeLimit).
+        case gated
         case unknown
     }
 
@@ -43,11 +48,15 @@ public enum ChargeControl {
 
     public static var keySet: KeySet {
         if let cached = cachedKeySet { return cached }
+        // A key that answers with zero bytes is a placeholder, not a key.
+        func live(_ key: String) -> Bool { !(SMC.shared.read(key)?.bytes.isEmpty ?? true) }
         let detected: KeySet
-        if SMC.shared.read("CHTE") != nil {
+        if live("CHTE") {
             detected = .modern
-        } else if SMC.shared.read("CH0B") != nil || SMC.shared.read("CH0C") != nil {
+        } else if live("CH0B") || live("CH0C") {
             detected = .legacy
+        } else if live("CHIE") {
+            detected = .gated
         } else {
             detected = .unknown
         }
@@ -65,7 +74,7 @@ public enum ChargeControl {
         if let cached = cachedCutoff { return cached }
         let result: Bool
         switch keySet {
-        case .modern: result = SMC.shared.read("CHIE") != nil
+        case .modern, .gated: result = SMC.shared.read("CHIE") != nil
         case .legacy: result = SMC.shared.read("CH0I") != nil
         case .unknown: result = false
         }
@@ -85,13 +94,14 @@ public enum ChargeControl {
     public static var chargingInhibited: Bool? {
         switch keySet {
         case .modern: return gateSet("CHTE")
+        case .gated: return nil
         case .legacy, .unknown: return gateSet("CH0B") ?? gateSet("CH0C")
         }
     }
 
     public static var adapterDisabled: Bool? {
         switch keySet {
-        case .modern: return gateSet("CHIE")
+        case .modern, .gated: return gateSet("CHIE")
         case .legacy, .unknown: return gateSet("CH0I")
         }
     }
@@ -118,6 +128,10 @@ public enum ChargeControl {
             let b = SMC.shared.write("CH0B", bytes: [value])
             let c = SMC.shared.write("CH0C", bytes: [value])
             return b || c
+        case .gated:
+            // Nothing to write to. Resuming is trivially true; stopping isn't
+            // possible from here.
+            return !inhibit
         case .unknown:
             // Nothing identified itself; try everything and hope.
             let value: UInt8 = inhibit ? 0x02 : 0x00
@@ -135,7 +149,7 @@ public enum ChargeControl {
         let chie: UInt8 = disabled ? 0x08 : 0x00
         let ch0i: UInt8 = disabled ? 0x01 : 0x00
         switch keySet {
-        case .modern:
+        case .modern, .gated:
             return SMC.shared.write("CHIE", bytes: [chie])
         case .legacy:
             return SMC.shared.write("CH0I", bytes: [ch0i])

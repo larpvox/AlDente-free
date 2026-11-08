@@ -24,6 +24,19 @@ final class Monitor: ObservableObject {
     @Published private(set) var snapshot = BatterySnapshot()
     private var macOSChargeLimit: Double?
     private var macOSLimitUnknownStreak = 0
+
+    /// On macOS 27 firmware the SMC won't stop charging any more, so a pause
+    /// borrows macOS's own Charge Limit. This is what BatteryScope set it to:
+    /// a percentage, 0 for switched off, nil when it's the user's again.
+    /// Kept across launches so a crash can't leave the user's setting lost.
+    private var nativeHold: Int? {
+        didSet { defaults.set(nativeHold ?? -1, forKey: "nativeHold") }
+    }
+    /// The user's own macOS limit from before BatteryScope borrowed it; 0 for off.
+    private var userMacOSLimit: Double = 0 {
+        didSet { defaults.set(userMacOSLimit, forKey: "userMacOSLimit") }
+    }
+    private var nativeAttemptAt = Date.distantPast
     @Published private(set) var processes: [ProcessEnergy] = []
     @Published private(set) var breakdown = EnergyBreakdown()
 
@@ -241,7 +254,8 @@ final class Monitor: ObservableObject {
 
     /// The limit macOS itself is enforcing, if any.
     var macOSLimit: Double? {
-        snapshot.systemChargeLimitActive ? (snapshot.systemChargeLimitPercent ?? 80) : nil
+        if nativeHold != nil { return userMacOSLimit > 0 ? userMacOSLimit : nil }
+        return snapshot.systemChargeLimitActive ? (snapshot.systemChargeLimitPercent ?? 80) : nil
     }
 
     /// Where charging stops: the lower of BatteryScope's limit and macOS's.
@@ -258,6 +272,10 @@ final class Monitor: ObservableObject {
         chargeLimitEnabled = defaults.object(forKey: "chargeLimitEnabled") as? Bool ?? true
         let storedLimit = defaults.double(forKey: "chargeLimit")
         chargeLimit = storedLimit == 0 ? 85 : storedLimit
+        if let held = defaults.object(forKey: "nativeHold") as? Int, held >= 0 {
+            nativeHold = held
+            userMacOSLimit = defaults.double(forKey: "userMacOSLimit")
+        }
         useHardwarePercent = defaults.object(forKey: "useHardwarePercent") as? Bool ?? false
         heatProtectionEnabled = defaults.object(forKey: "heatProtectionEnabled") as? Bool ?? true
         let storedHeat = defaults.double(forKey: "heatProtectionCelsius")
@@ -396,7 +414,23 @@ final class Monitor: ObservableObject {
         // A read that can't tell keeps the last answer, so the Control tab
         // doesn't flicker; five in a row and it's treated as off.
         if slowDue {
-            switch SystemChargeLimit.read() {
+            let reading = SystemChargeLimit.read()
+            // While BatteryScope is borrowing the limit, a value it didn't set
+            // means the user changed it in System Settings. That becomes the
+            // limit to hand back; the hold itself is put back on the next pass.
+            if let held = nativeHold, now.timeIntervalSince(nativeAttemptAt) > 15 {
+                switch reading {
+                case .on(let limit) where Int(limit.rounded()) != held:
+                    userMacOSLimit = limit
+                    nativeAttemptAt = .distantPast
+                case .off where held != 0:
+                    userMacOSLimit = 0
+                    nativeAttemptAt = .distantPast
+                default:
+                    break
+                }
+            }
+            switch reading {
             case .on(let limit):
                 macOSChargeLimit = limit
                 macOSLimitUnknownStreak = 0
@@ -408,7 +442,11 @@ final class Monitor: ObservableObject {
                 if macOSLimitUnknownStreak >= 5 { macOSChargeLimit = nil }
             }
         }
-        if let limit = macOSChargeLimit {
+        if nativeHold != nil {
+            snapshot.systemChargeLimitActive = userMacOSLimit > 0
+            snapshot.systemChargeLimitPercent = userMacOSLimit > 0 ? userMacOSLimit : nil
+            snapshot.chargingInhibited = (nativeHold ?? 0) > 0
+        } else if let limit = macOSChargeLimit {
             snapshot.systemChargeLimitActive = true
             snapshot.systemChargeLimitPercent = limit
         }
@@ -829,6 +867,10 @@ final class Monitor: ObservableObject {
     static let reassertSeconds: TimeInterval = 10
 
     private func apply(inhibit: Bool, discharge: Bool, note: String? = nil) {
+        if ChargeControl.keySet == .gated {
+            applyGated(inhibit: inhibit, discharge: discharge, note: note)
+            return
+        }
         let now = Date()
         // macOS's own Charge Limit drives the same gate, and sleep and
         // replugging can reset it, so a hold set once doesn't stay set. Check
@@ -843,7 +885,12 @@ final class Monitor: ObservableObject {
             inhibitAttemptAt = now
             lastInhibit = ChargeControlClient.setChargingInhibited(inhibit) ? inhibit : nil
         }
-        let cutAdapter = discharge && wantsAdapterCutoff
+        setAdapterCut(discharge && wantsAdapterCutoff, now: now)
+        lastHelperMessage = note
+    }
+
+    private func setAdapterCut(_ cutAdapter: Bool, now: Date) {
+        let pluggedIn = snapshot.isPluggedIn
         let dischargeDue = now.timeIntervalSince(dischargeAttemptAt) >= Self.reassertSeconds
         let cutSlipped = cutAdapter && lastDischarge == true && pluggedIn && dischargeDue
             && ChargeControl.adapterDisabled == false
@@ -856,7 +903,91 @@ final class Monitor: ObservableObject {
                 setKeepAwake(cutAdapter)
             }
         }
-        lastHelperMessage = note
+    }
+
+    /// Charge control on macOS 27 firmware, where the SMC no longer takes a
+    /// stop. Pausing on mains goes through macOS's Charge Limit: set at the
+    /// current level, the firmware holds the battery there and runs the Mac
+    /// off the charger; set below it, the firmware drains down to it, still
+    /// on mains. That limit can't go under 80%, so below that the only lever
+    /// left is cutting the adapter, which runs the Mac on its battery.
+    private func applyGated(inhibit: Bool, discharge: Bool, note: String?) {
+        let now = Date()
+        let floor = SystemChargeLimit.minimumLimit
+        let level = min(99, Int((effectivePercent ?? 0).rounded()))
+        let canBorrow = SystemChargeLimit.canWrite
+        let calibrating = calibrationPhase == .discharging
+
+        var target: Int?     // a macOS limit to hold at
+        var cut = false
+        var message = note
+        if discharge {
+            let ceiling = Int(effectiveCeiling.rounded())
+            if canBorrow, !calibrating, ceiling >= floor, ceiling < 100 {
+                target = ceiling
+            } else {
+                cut = wantsAdapterCutoff
+            }
+        } else if inhibit {
+            let held = nativeHold.flatMap { $0 > 0 ? $0 : nil }
+            if canBorrow, level >= floor || held != nil {
+                // Follow the level down, never up: a limit above the level
+                // would charge, and macOS resumes once it's 5 points under.
+                // A hold already in place stays at 80 as the level drifts
+                // below it, rather than switching to cutting the adapter.
+                target = max(floor, min(held ?? 99, level))
+            } else if wantsAdapterCutoff {
+                cut = true
+            } else {
+                message = "Can't pause charging below \(floor)% on this macOS without cutting the adapter. Choose Cut the adapter or Automatic under Discharge."
+            }
+        }
+
+        // Cutting the adapter is ignored while a macOS limit is in force, so
+        // that is switched off for the duration.
+        let wanted: Int? = cut ? (nativeHold != nil || macOSChargeLimit != nil ? 0 : nil) : target
+        if let wanted {
+            let due = now.timeIntervalSince(nativeAttemptAt) >= Self.reassertSeconds
+            func holding() -> Bool {
+                switch SystemChargeLimit.read() {
+                case .on(let l): return Int(l.rounded()) == wanted
+                case .off: return wanted == 0
+                case .unknown: return true
+                }
+            }
+            if nativeHold != wanted || (due && !holding()) {
+                if nativeHold == nil { userMacOSLimit = macOSChargeLimit ?? 0 }
+                nativeAttemptAt = now
+                let ok = wanted == 0 ? SystemChargeLimit.disable() : SystemChargeLimit.set(wanted)
+                if ok {
+                    nativeHold = wanted
+                } else if inhibit || discharge {
+                    message = "macOS refused the charge limit BatteryScope needs to pause charging."
+                }
+            }
+        } else {
+            releaseNativeHold(now: now)
+        }
+
+        setAdapterCut(cut, now: now)
+        lastHelperMessage = message
+    }
+
+    /// Give the user's own macOS limit back.
+    private func releaseNativeHold(now: Date = Date()) {
+        guard nativeHold != nil,
+              now.timeIntervalSince(nativeAttemptAt) >= Self.reassertSeconds
+                || nativeAttemptAt == .distantPast else { return }
+        nativeAttemptAt = now
+        let user = Int(userMacOSLimit.rounded())
+        let ok = user >= SystemChargeLimit.minimumLimit && user < 100
+            ? SystemChargeLimit.set(user)
+            : SystemChargeLimit.disable()
+        if ok {
+            nativeHold = nil
+            nativeAttemptAt = .distantPast
+            macOSChargeLimit = userMacOSLimit > 0 ? userMacOSLimit : nil
+        }
     }
 
     /// How far the measured figure is allowed to sit from the reported one.
@@ -967,6 +1098,8 @@ final class Monitor: ObservableObject {
     }
 
     func resetChargeControl() {
+        nativeAttemptAt = .distantPast
+        releaseNativeHold()
         guard helperInstalled else { return }
         _ = ChargeControlClient.reset()
         if hasFans { _ = FanControlClient.restoreAll() }
