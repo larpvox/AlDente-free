@@ -17,6 +17,7 @@ enum CLI {
           --ctl get <KEY>          Read a four-character SMC key
           --ctl inhibit on|off     Stop / resume charging while plugged in
           --ctl discharge on|off   Cut the adapter, run off the battery
+          --ctl range N|off        Firmware-enforced hold at N% (newer firmware)
           --ctl hw80 on|off        Toggle the firmware 80% cap where supported
           --ctl set <KEY> <hex>    Write raw bytes, e.g. set CH0B 02
           --ctl fans               List the fans and their state
@@ -63,6 +64,9 @@ enum CLI {
             print("charging inhibited: \(ChargeControl.chargingInhibited.map(String.init(describing:)) ?? "unreadable")")
             print("adapter disabled  : \(ChargeControl.adapterDisabled.map(String.init(describing:)) ?? "unreadable")")
             print("firmware 80% cap  : \(ChargeControl.hardware80)")
+            if ChargeControl.supportsFirmwareRange {
+                print("firmware range    : \(ChargeControl.firmwareRangeUpper.map { "holding at \($0)%" } ?? "off")")
+            }
             if let p = snap.displayedPercent { print(String(format: "displayed charge  : %.0f%%", p)) }
             if let p = snap.hardwarePercent { print(String(format: "hardware charge   : %.1f%%", p)) }
             if let w = snap.systemWatts { print(String(format: "system draw       : %.2f W", w)) }
@@ -93,6 +97,14 @@ enum CLI {
         case "discharge":
             requireRoot()
             exit(ChargeControl.setAdapterDisabled(flag(args.count > 1 ? args[1] : nil)) ? 0 : 1)
+
+        case "range":
+            // range <upper%> | range off
+            requireRoot()
+            let arg = args.count > 1 ? args[1] : "off"
+            if arg == "off" { exit(ChargeControl.setFirmwareRange(upper: nil) ? 0 : 1) }
+            guard let upper = Int(arg), (2...100).contains(upper) else { usage() }
+            exit(ChargeControl.setFirmwareRange(upper: upper) ? 0 : 1)
 
         case "hw80":
             requireRoot()

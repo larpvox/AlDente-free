@@ -35,10 +35,11 @@ public enum ChargeControl {
     public enum KeySet: String {
         case modern    // CHTE / CHIE
         case legacy    // CH0B + CH0C / CH0I
-        /// macOS 27 firmware: CHTE and friends are still listed but hold no
-        /// data and take no writes, even from root. Only CHIE (cutting the
-        /// adapter) still works; stopping on mains goes through macOS's own
-        /// Charge Limit instead (see SystemChargeLimit).
+        /// Newer firmware (macOS 27, and the 26.6+ / 15.8 updates): CHTE and
+        /// friends are still listed but hold no data and take no writes, even
+        /// from root. What's left, depending on the exact firmware: macOS's
+        /// own Charge Limit (SystemChargeLimit), a firmware-enforced charge
+        /// range (bfD0/bfE0/bfF0, below), and CHIE to cut the adapter.
         case gated
         case unknown
     }
@@ -48,14 +49,12 @@ public enum ChargeControl {
 
     public static var keySet: KeySet {
         if let cached = cachedKeySet { return cached }
-        // A key that answers with zero bytes is a placeholder, not a key.
-        func live(_ key: String) -> Bool { !(SMC.shared.read(key)?.bytes.isEmpty ?? true) }
         let detected: KeySet
         if live("CHTE") {
             detected = .modern
         } else if live("CH0B") || live("CH0C") {
             detected = .legacy
-        } else if live("CHIE") {
+        } else if live("CHIE") || supportsFirmwareRange {
             detected = .gated
         } else {
             detected = .unknown
@@ -67,6 +66,58 @@ public enum ChargeControl {
     public static func forgetKeySet() {
         cachedKeySet = nil
         cachedCutoff = nil
+        cachedRange = nil
+    }
+
+    /// A key that answers with zero bytes is a placeholder, not a key.
+    private static func live(_ key: String) -> Bool {
+        !(SMC.shared.read(key)?.bytes.isEmpty ?? true)
+    }
+
+    // MARK: Firmware charge range
+
+    // Firmware from the macOS 26.6 / 15.8 era enforces a charge range by
+    // itself, sleep included: bfD0 is the upper percentage, bfE0 the lower
+    // (both ui32, little-endian, lower strictly under upper), bfF0 switches
+    // it on (02) and off (00). Above the upper bound the firmware lets the
+    // battery run down to it. Later firmware locks these keys away even from
+    // root, so they only count if they actually read.
+    private static var cachedRange: Bool?
+
+    public static var supportsFirmwareRange: Bool {
+        if let cachedRange { return cachedRange }
+        let ok = live("bfF0") && live("bfD0") && live("bfE0")
+        cachedRange = ok
+        return ok
+    }
+
+    private static func le32(_ key: String) -> Int? {
+        guard let b = SMC.shared.read(key)?.bytes, !b.isEmpty else { return nil }
+        return b.prefix(4).enumerated().reduce(0) { $0 | Int($1.element) << (8 * $1.offset) }
+    }
+
+    /// The upper bound of the firmware range while it's switched on, nil
+    /// when it's off or can't be read.
+    public static var firmwareRangeUpper: Int? {
+        guard supportsFirmwareRange,
+              let flag = SMC.shared.read("bfF0")?.bytes.first, flag != 0 else { return nil }
+        return le32("bfD0")
+    }
+
+    /// Hold the battery at `upper` (lower bound one point under), or switch
+    /// the range off with nil. **Requires root.**
+    @discardableResult
+    public static func setFirmwareRange(upper: Int?) -> Bool {
+        guard supportsFirmwareRange else { return false }
+        // Off first: the firmware doesn't take new bounds while it's on.
+        guard SMC.shared.write("bfF0", bytes: [0x00]) else { return false }
+        guard let upper else { return true }
+        let high = min(100, max(2, upper))
+        func bytes(_ v: Int) -> [UInt8] { [UInt8(v), 0, 0, 0] }
+        guard SMC.shared.write("bfD0", bytes: bytes(high)),
+              SMC.shared.write("bfE0", bytes: bytes(high - 1)),
+              SMC.shared.write("bfF0", bytes: [0x02]) else { return false }
+        return firmwareRangeUpper == high && le32("bfE0") == high - 1
     }
 
     /// Whether cutting the adapter is possible on this machine.
@@ -210,6 +261,10 @@ public enum ChargeControlClient {
 
     public static func setHardware80(_ on: Bool) -> Bool {
         run(["hw80", on ? "on" : "off"]).ok
+    }
+
+    public static func setFirmwareRange(upper: Int?) -> Bool {
+        run(["range", upper.map(String.init) ?? "off"]).ok
     }
 
     public static func reset() -> Bool {

@@ -37,6 +37,13 @@ final class Monitor: ObservableObject {
         didSet { defaults.set(userMacOSLimit, forKey: "userMacOSLimit") }
     }
     private var nativeAttemptAt = Date.distantPast
+
+    /// Where BatteryScope has set the firmware's own charge range, on firmware
+    /// that has one but no macOS limit to borrow (macOS 15.8). nil when off.
+    private var rangeHold: Int? {
+        didSet { defaults.set(rangeHold ?? -1, forKey: "rangeHold") }
+    }
+    private var rangeAttemptAt = Date.distantPast
     @Published private(set) var processes: [ProcessEnergy] = []
     @Published private(set) var breakdown = EnergyBreakdown()
 
@@ -272,6 +279,9 @@ final class Monitor: ObservableObject {
         chargeLimitEnabled = defaults.object(forKey: "chargeLimitEnabled") as? Bool ?? true
         let storedLimit = defaults.double(forKey: "chargeLimit")
         chargeLimit = storedLimit == 0 ? 85 : storedLimit
+        if let held = defaults.object(forKey: "rangeHold") as? Int, held >= 0 {
+            rangeHold = held
+        }
         if let held = defaults.object(forKey: "nativeHold") as? Int, held >= 0 {
             nativeHold = held
             userMacOSLimit = defaults.double(forKey: "userMacOSLimit")
@@ -450,6 +460,7 @@ final class Monitor: ObservableObject {
             snapshot.systemChargeLimitActive = true
             snapshot.systemChargeLimitPercent = limit
         }
+        if rangeHold != nil { snapshot.chargingInhibited = true }
 
         // System Settings rounds and smooths its Maximum Capacity figure, so
         // recomputing it from the capacity registers lands a point or two
@@ -912,6 +923,10 @@ final class Monitor: ObservableObject {
     /// on mains. That limit can't go under 80%, so below that the only lever
     /// left is cutting the adapter, which runs the Mac on its battery.
     private func applyGated(inhibit: Bool, discharge: Bool, note: String?) {
+        if !SystemChargeLimit.canWrite, ChargeControl.supportsFirmwareRange {
+            applyFirmwareRange(inhibit: inhibit, discharge: discharge, note: note)
+            return
+        }
         let now = Date()
         let floor = SystemChargeLimit.minimumLimit
         let level = min(99, Int((effectivePercent ?? 0).rounded()))
@@ -970,6 +985,40 @@ final class Monitor: ObservableObject {
         }
 
         setAdapterCut(cut, now: now)
+        lastHelperMessage = message
+    }
+
+    /// Charge control through the firmware's own charge range. It takes any
+    /// percentage and holds through sleep, so nothing here needs the adapter
+    /// cut or the Mac kept awake. Set at the current level the firmware holds
+    /// there; set below it, it lets the battery run down to it.
+    private func applyFirmwareRange(inhibit: Bool, discharge: Bool, note: String?) {
+        let now = Date()
+        let level = max(2, min(100, Int((effectivePercent ?? 0).rounded())))
+        var target: Int?
+        if discharge {
+            target = calibrationPhase == .discharging ? 15 : max(2, Int(effectiveCeiling.rounded()))
+        } else if inhibit {
+            // Follow the level down, never up, so the firmware's lower bound
+            // never trips a recharge while Sailing lets it drift.
+            target = min(rangeHold ?? 100, level)
+        }
+        var message = note
+        let due = now.timeIntervalSince(rangeAttemptAt) >= Self.reassertSeconds
+        if let target {
+            if rangeHold != target || (due && ChargeControl.firmwareRangeUpper != target) {
+                rangeAttemptAt = now
+                if ChargeControlClient.setFirmwareRange(upper: target) {
+                    rangeHold = target
+                } else {
+                    message = "The firmware refused the charge range BatteryScope needs to pause charging."
+                }
+            }
+        } else if rangeHold != nil, due {
+            rangeAttemptAt = now
+            if ChargeControlClient.setFirmwareRange(upper: nil) { rangeHold = nil }
+        }
+        setAdapterCut(false, now: now)
         lastHelperMessage = message
     }
 
@@ -1101,6 +1150,7 @@ final class Monitor: ObservableObject {
         nativeAttemptAt = .distantPast
         releaseNativeHold()
         guard helperInstalled else { return }
+        if rangeHold != nil, ChargeControlClient.setFirmwareRange(upper: nil) { rangeHold = nil }
         _ = ChargeControlClient.reset()
         if hasFans { _ = FanControlClient.restoreAll() }
         lastInhibit = false
