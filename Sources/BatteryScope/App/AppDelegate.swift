@@ -21,14 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// time: the menu bar freezes on a stale reading until something wakes it.
     private var activity: NSObjectProtocol?
 
-    /// The widest the status item has needed to be for the current set of
-    /// fields. Growing is allowed, shrinking only when the fields change, so
-    /// the item doesn't twitch every refresh. On a notched MacBook a status
-    /// item that keeps changing width is one macOS keeps hiding behind the
-    /// notch.
+    /// The widest the status item has needed to be for the fields on show.
+    /// It grows at once but only shrinks once the text has stayed narrower
+    /// for a while, or straight away when a field appears or drops out, so
+    /// it doesn't twitch every refresh. On a notched MacBook a status item
+    /// that keeps changing width is one macOS keeps hiding behind the notch.
     private var statusWidth: CGFloat = 0
-    private var statusFields: Set<Monitor.MenuBarField> = []
-    private var statusPlugged: Bool?
+    private var statusFields: [Monitor.MenuBarField] = []
+    private var narrowerSince: Date?
+    private static let shrinkAfter: TimeInterval = 20
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -110,20 +111,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             lastTitle = title
             button.title = title
             button.image = nil
+        }
 
-            // Plugging in or out changes which fields apply, so it starts
-            // the width over too.
-            if monitor.menuBarFields != statusFields || monitor.snapshot.isPluggedIn != statusPlugged {
-                statusFields = monitor.menuBarFields
-                statusPlugged = monitor.snapshot.isPluggedIn
-                statusWidth = 0
-            }
-            // What variableLength would have used, padding included.
-            let needed = ceil(button.intrinsicContentSize.width)
-            if needed > statusWidth || statusWidth == 0 {
+        // A field appearing or dropping out (time remaining while a charge
+        // is paused, the charger when unplugged) starts the width over.
+        let fields = Updater.shared.isBusy ? [] : monitor.visibleMenuBarFields
+        if fields != statusFields {
+            statusFields = fields
+            statusWidth = 0
+        }
+        // What variableLength would have used, padding included.
+        let needed = ceil(button.intrinsicContentSize.width)
+        if needed > statusWidth || statusWidth == 0 {
+            statusWidth = needed
+            narrowerSince = nil
+            item.length = statusWidth
+        } else if needed < statusWidth - 1 {
+            // Narrower now, e.g. 55W in became 4W in. Give the space back
+            // once it has stayed that way, rather than holding it forever.
+            let now = Date()
+            if let since = narrowerSince, now.timeIntervalSince(since) >= Self.shrinkAfter {
                 statusWidth = needed
+                narrowerSince = nil
                 item.length = statusWidth
+            } else if narrowerSince == nil {
+                narrowerSince = now
             }
+        } else {
+            narrowerSince = nil
         }
 
         // The tooltip changes even when the title doesn't.

@@ -1174,6 +1174,12 @@ final class Monitor: ObservableObject {
     /// nil means "this field doesn't apply right now" and it's left out.
     /// A reading that applies but momentarily isn't available shows a dash
     /// instead, so fields don't silently vanish from the bar and come back.
+    /// The fields actually showing right now. A chosen field drops out when
+    /// it doesn't apply, such as time remaining while a charge is paused.
+    var visibleMenuBarFields: [MenuBarField] {
+        MenuBarField.allCases.filter { menuBarFields.contains($0) && menuBarValue(for: $0) != nil }
+    }
+
     private func menuBarValue(for field: MenuBarField) -> String? {
         let dash = "\u{2013}"
         switch field {
