@@ -289,7 +289,7 @@ final class Monitor: ObservableObject {
         useHardwarePercent = defaults.object(forKey: "useHardwarePercent") as? Bool ?? false
         heatProtectionEnabled = defaults.object(forKey: "heatProtectionEnabled") as? Bool ?? true
         let storedHeat = defaults.double(forKey: "heatProtectionCelsius")
-        heatProtectionCelsius = storedHeat == 0 ? 40 : storedHeat
+        heatProtectionCelsius = storedHeat == 0 ? 38 : storedHeat
         autoDischargeEnabled = defaults.bool(forKey: "autoDischargeEnabled")
         if let saved = defaults.array(forKey: "menuBarFields") as? [String] {
             menuBarFields = Set(saved.compactMap(MenuBarField.init(rawValue:)))
